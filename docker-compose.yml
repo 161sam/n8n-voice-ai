@@ -1,0 +1,231 @@
+version: '3.8'
+
+volumes:
+  n8n_storage:
+  postgres_storage:
+  ollama_storage:
+  whisper_models:
+  shared_audio:
+  redis_storage:
+
+networks:
+  ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+x-shared-env: &shared-env
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_DB: ${POSTGRES_DB}
+  N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+  N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET}
+
+services:
+  # Main n8n Instance
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n-voice-ai
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      <<: *shared-env
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://${N8N_HOST}/
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_BINARY_DATA_STORAGE_PATH=/data/binary
+      - N8N_METRICS=true
+      - N8N_LOG_LEVEL=info
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - EXECUTIONS_PROCESS=queue
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_HEALTH_CHECK_ACTIVE=true
+      - OLLAMA_HOST=ollama:11434
+      - WHISPER_API_URL=http://whisper-server:8080
+      - KOKORO_API_URL=http://kokoro-tts:8880
+    volumes:
+      - n8n_storage:/home/node/.n8n
+      - shared_audio:/data/shared
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+      whisper-server:
+        condition: service_started
+      kokoro-tts:
+        condition: service_started
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16
+    container_name: postgres-voice-ai
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_storage:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ai-network
+
+  # Redis for Queue Management
+  redis:
+    image: redis:7-alpine
+    container_name: redis-voice-ai
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_storage:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ai-network
+
+  # Ollama LLM Server
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-voice-ai
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_ORIGINS=http://n8n:5678,http://localhost:5678
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama_storage:/root/.ollama
+      - ./ollama-models:/models
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Whisper.cpp STT Server
+  whisper-server:
+    image: litongjava/whisper-cpp-server:1.0.0-large-v3
+    container_name: whisper-voice-ai
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - whisper_models:/models
+      - shared_audio:/tmp/audio
+    environment:
+      - MODEL_PATH=/models/ggml-large-v3.bin
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+
+  # Kokoro TTS Server
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: kokoro-tts-voice-ai
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    volumes:
+      - shared_audio:/tmp/audio
+    environment:
+      - KOKORO_MODEL=kokoro
+      - DEVICE=cpu
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-voice-ai
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - ai-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-voice-ai
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - ai-network
+
+  # Reverse Proxy
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik-voice-ai
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./acme.json:/acme.json
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.${N8N_HOST}`)"
+      - "traefik.http.routers.dashboard.tls.certresolver=le"
+    networks:
+      - ai-network
