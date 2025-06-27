@@ -1,0 +1,514 @@
+{
+  "name": "Voice AI Agent - Real-time Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "voice-stream",
+        "authentication": "jwtAuth",
+        "options": {
+          "binaryPropertyName": "audioStream",
+          "rawBody": true
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-real-time-voice-input",
+      "name": "WebSocket Voice Input",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enhanced audio validation and preprocessing\nconst audioData = $binary.audioStream;\nconst sessionId = $json.sessionId || `session_${Date.now()}`;\nconst userId = $json.userId || 'anonymous';\n\n// Validate audio stream\nif (!audioData || audioData.fileSize === 0) {\n  throw new Error('Invalid audio stream');\n}\n\n// Audio format validation\nconst supportedFormats = ['audio/wav', 'audio/webm', 'audio/ogg'];\nif (!supportedFormats.includes(audioData.mimeType)) {\n  throw new Error(`Unsupported audio format: ${audioData.mimeType}`);\n}\n\n// Generate unique interaction ID with timestamp\nconst interactionId = `${userId}_${sessionId}_${Date.now()}`;\nconst timestamp = new Date().toISOString();\n\n// Audio stream metadata\nconst audioMetadata = {\n  interactionId,\n  sessionId,\n  userId,\n  timestamp,\n  audioFormat: audioData.mimeType,\n  audioSize: audioData.fileSize,\n  sampleRate: $json.sampleRate || 16000,\n  channels: $json.channels || 1,\n  duration: audioData.fileSize / (16000 * 2), // Approximate duration for 16kHz 16-bit\n  clientInfo: {\n    userAgent: $json.userAgent,\n    language: $json.language || 'en-US',\n    timezone: $json.timezone || 'UTC'\n  }\n};\n\nreturn {\n  json: audioMetadata,\n  binary: {\n    audioStream: audioData\n  }\n};"
+      },
+      "id": "b2c3d4e5-f6g7-8901-audio-preprocessing",
+      "name": "Enhanced Audio Preprocessing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Voice Activity Detection (VAD)\nconst audioData = $binary.audioStream;\nconst audioBuffer = Buffer.from(audioData.data, 'base64');\n\n// Simple energy-based VAD (in production, use WebRTC VAD or Silero VAD)\nfunction detectVoiceActivity(buffer) {\n  const samples = new Int16Array(buffer.buffer);\n  let energy = 0;\n  \n  for (let i = 0; i < samples.length; i++) {\n    energy += samples[i] * samples[i];\n  }\n  \n  const rms = Math.sqrt(energy / samples.length);\n  const threshold = 500; // Adjust based on your needs\n  \n  return {\n    isSpeech: rms > threshold,\n    energy: rms,\n    confidence: Math.min(rms / threshold, 1.0)\n  };\n}\n\nconst vadResult = detectVoiceActivity(audioBuffer);\n\nreturn {\n  json: {\n    ...vadResult,\n    timestamp: new Date().toISOString(),\n    processAudio: vadResult.isSpeech\n  },\n  binary: {\n    audioStream: $binary.audioStream\n  }\n};"
+      },
+      "id": "c3d4e5f6-g7h8-9012-voice-activity-detection",
+      "name": "Voice Activity Detection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "all"
+          },
+          "conditions": [
+            {
+              "id": "speech_detected",
+              "leftValue": "={{ $json.processAudio }}",
+              "rightValue": true,
+              "operation": "equal"
+            },
+            {
+              "id": "confidence_check",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.3,
+              "operation": "largerEqual"
+            }
+          ]
+        }
+      },
+      "id": "d4e5f6g7-h8i9-0123-speech-validation",
+      "name": "Validate Speech Detection",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://whisper-server:8080/v1/audio/transcriptions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBinaryData": true,
+        "binaryPropertyName": "audioStream",
+        "sendBody": true,
+        "bodyContentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper-large-v3"
+            },
+            {
+              "name": "language",
+              "value": "={{ $('Enhanced Audio Preprocessing').item.json.clientInfo.language.split('-')[0] }}"
+            },
+            {
+              "name": "response_format",
+              "value": "verbose_json"
+            },
+            {
+              "name": "temperature",
+              "value": "0.0"
+            },
+            {
+              "name": "timestamp_granularities[]",
+              "value": "word"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "retry": {
+            "enabled": true,
+            "maxTries": 3
+          }
+        }
+      },
+      "id": "e5f6g7h8-i9j0-1234-enhanced-stt",
+      "name": "Enhanced Speech-to-Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "url": "http://embedding-service:8000/search",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"query\": \"{{ $json.text }}\",\n  \"limit\": 5\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "f6g7h8i9-j0k1-2345-rag-search",
+      "name": "RAG Knowledge Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 240],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enhanced context building with RAG results\nconst transcription = $('Enhanced Speech-to-Text').item.json;\nconst ragResults = $('RAG Knowledge Search').item.json || [];\nconst audioMetadata = $('Enhanced Audio Preprocessing').item.json;\n\n// Build conversation context\nconst userQuery = transcription.text;\nconst confidence = transcription.confidence || 0.0;\nconst language = transcription.language || 'en';\n\n// Extract relevant knowledge from RAG\nconst relevantKnowledge = ragResults\n  .filter(result => result.score > 0.7)\n  .map(result => result.text)\n  .join('\\n\\n');\n\n// Build enhanced prompt with context\nconst systemPrompt = `You are a helpful AI assistant specialized in voice interactions.\n\nUser Information:\n- Language: ${language}\n- Session: ${audioMetadata.sessionId}\n- Interaction: ${audioMetadata.interactionId}\n\nRelevant Knowledge:\n${relevantKnowledge || 'No specific knowledge found for this query.'}\n\nInstructions:\n- Keep responses conversational and natural for voice output\n- If transcription confidence is low (< 0.8), ask for clarification\n- Use the provided knowledge when relevant\n- Respond in the same language as the user\n- Keep responses under 200 words for voice synthesis`;\n\nconst userPrompt = `User said: \"${userQuery}\"\nTranscription confidence: ${confidence}`;\n\nreturn {\n  json: {\n    systemPrompt,\n    userPrompt,\n    userQuery,\n    confidence,\n    language,\n    hasKnowledge: relevantKnowledge.length > 0,\n    knowledgeSnippets: ragResults.length,\n    processingTimestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "g7h8i9j0-k1l2-3456-context-building",
+      "name": "Build Enhanced Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 240]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama-server:11434/v1/chat/completions",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $vars.LLM_MODEL || 'llama3.2:8b' }}\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"{{ $json.systemPrompt }}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"{{ $json.userPrompt }}\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 300,\n  \"top_p\": 0.9,\n  \"presence_penalty\": 0.1,\n  \"frequency_penalty\": 0.1\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "h8i9j0k1-l2m3-4567-llm-processing",
+      "name": "Enhanced LLM Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Post-process LLM response for voice optimization\nconst llmResponse = $json.choices?.[0]?.message?.content || $json.response || $json.text || '';\nconst metadata = $('Build Enhanced Context').item.json;\n\n// Clean and optimize response for TTS\nfunction optimizeForVoice(text) {\n  return text\n    .replace(/\\*\\*(.*?)\\*\\*/g, '$1') // Remove markdown bold\n    .replace(/\\*(.*?)\\*/g, '$1')     // Remove markdown italic\n    .replace(/```[\\s\\S]*?```/g, '')  // Remove code blocks\n    .replace(/\\[([^\\]]+)\\]\\([^)]+\\)/g, '$1') // Convert links to text\n    .replace(/\\s+/g, ' ')           // Normalize whitespace\n    .trim();\n}\n\nconst optimizedResponse = optimizeForVoice(llmResponse);\n\n// Add SSML tags for better speech synthesis\nconst ssmlResponse = `<speak>\n  <prosody rate=\"medium\" pitch=\"medium\">\n    ${optimizedResponse}\n  </prosody>\n</speak>`;\n\nreturn {\n  json: {\n    originalResponse: llmResponse,\n    optimizedResponse,\n    ssmlResponse,\n    responseLength: optimizedResponse.length,\n    estimatedSpeechDuration: Math.ceil(optimizedResponse.length / 15), // ~15 chars per second\n    processingComplete: true,\n    metadata: {\n      interactionId: metadata.interactionId || 'unknown',\n      language: metadata.language,\n      hasKnowledge: metadata.hasKnowledge,\n      confidence: metadata.confidence\n    }\n  }\n};"
+      },
+      "id": "i9j0k1l2-m3n4-5678-response-optimization",
+      "name": "Optimize Response for Voice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 240]
+    },
+    {
+      "parameters": {
+        "url": "http://kokoro-tts:8880/v1/audio/speech",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"model\": \"kokoro-v2\",\n  \"input\": \"{{ $json.ssmlResponse }}\",\n  \"voice\": \"{{ $vars.TTS_VOICE || 'af_bella' }}\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0,\n  \"pitch\": 0.0,\n  \"voice_settings\": {\n    \"stability\": 0.75,\n    \"similarity_boost\": 0.75,\n    \"style\": 0.5\n  }\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "responseFormat": "file",
+            "outputPropertyName": "audioResponse"
+          }
+        }
+      },
+      "id": "j0k1l2m3-n4o5-6789-enhanced-tts",
+      "name": "Enhanced Text-to-Speech",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2220, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "interaction_id",
+              "name": "interactionId",
+              "value": "={{ $('Enhanced Audio Preprocessing').item.json.interactionId }}",
+              "type": "string"
+            },
+            {
+              "id": "session_id",
+              "name": "sessionId",
+              "value": "={{ $('Enhanced Audio Preprocessing').item.json.sessionId }}",
+              "type": "string"
+            },
+            {
+              "id": "user_id",
+              "name": "userId",
+              "value": "={{ $('Enhanced Audio Preprocessing').item.json.userId }}",
+              "type": "string"
+            },
+            {
+              "id": "user_input",
+              "name": "userInput",
+              "value": "={{ $('Enhanced Speech-to-Text').item.json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "ai_response",
+              "name": "aiResponse",
+              "value": "={{ $('Optimize Response for Voice').item.json.optimizedResponse }}",
+              "type": "string"
+            },
+            {
+              "id": "confidence",
+              "name": "confidence",
+              "value": "={{ $('Enhanced Speech-to-Text').item.json.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "language",
+              "name": "language",
+              "value": "={{ $('Enhanced Speech-to-Text').item.json.language }}",
+              "type": "string"
+            },
+            {
+              "id": "processing_time",
+              "name": "processingTime",
+              "value": "={{ new Date().getTime() - new Date($('Enhanced Audio Preprocessing').item.json.timestamp).getTime() }}",
+              "type": "number"
+            },
+            {
+              "id": "rag_used",
+              "name": "ragUsed",
+              "value": "={{ $('Optimize Response for Voice').item.json.metadata.hasKnowledge }}",
+              "type": "boolean"
+            },
+            {
+              "id": "audio_format",
+              "name": "audioFormat",
+              "value": "mp3",
+              "type": "string"
+            },
+            {
+              "id": "status",
+              "name": "status",
+              "value": "completed",
+              "type": "string"
+            },
+            {
+              "id": "timestamp",
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "k1l2m3n4-o5p6-7890-format-response",
+      "name": "Format Enhanced Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2440, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"interactionId\": \"{{ $json.interactionId }}\",\n  \"response\": {\n    \"text\": \"{{ $json.aiResponse }}\",\n    \"audio\": {\n      \"format\": \"{{ $json.audioFormat }}\",\n      \"data\": \"{{ $binary.audioResponse ? Buffer.from($binary.audioResponse.data).toString('base64') : null }}\"\n    }\n  },\n  \"metadata\": {\n    \"confidence\": {{ $json.confidence }},\n    \"language\": \"{{ $json.language }}\",\n    \"processingTime\": {{ $json.processingTime }},\n    \"ragUsed\": {{ $json.ragUsed }},\n    \"timestamp\": \"{{ $json.timestamp }}\"\n  }\n}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "X-Voice-AI-Version",
+                "value": "2.0"
+              }
+            ]
+          }
+        }
+      },
+      "id": "l2m3n4o5-p6q7-8901-webhook-response",
+      "name": "Send Enhanced Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2660, 240]
+    },
+    {
+      "parameters": {
+        "workflowId": "{{ $vars.ENHANCED_LOGGING_WORKFLOW_ID }}",
+        "rawInputs": {
+          "workflowInputs": [
+            {
+              "name": "interactionData",
+              "value": "={{ JSON.stringify($json) }}"
+            },
+            {
+              "name": "audioMetadata",
+              "value": "={{ JSON.stringify($('Enhanced Audio Preprocessing').item.json) }}"
+            },
+            {
+              "name": "vadResults",
+              "value": "={{ JSON.stringify($('Voice Activity Detection').item.json) }}"
+            },
+            {
+              "name": "transcriptionData",
+              "value": "={{ JSON.stringify($('Enhanced Speech-to-Text').item.json) }}"
+            }
+          ]
+        },
+        "options": {
+          "waitForCompletion": false
+        }
+      },
+      "id": "m3n4o5p6-q7r8-9012-enhanced-logging",
+      "name": "Enhanced Interaction Logging",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [2440, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"error\": true,\n  \"message\": \"No speech detected or confidence too low\",\n  \"details\": {\n    \"speechDetected\": {{ $('Voice Activity Detection').item.json.isSpeech }},\n    \"confidence\": {{ $('Voice Activity Detection').item.json.confidence }},\n    \"energy\": {{ $('Voice Activity Detection').item.json.energy }}\n  },\n  \"suggestions\": [\n    \"Speak closer to the microphone\",\n    \"Reduce background noise\",\n    \"Speak more clearly\"\n  ]\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "n4o5p6q7-r8s9-0123-no-speech-response",
+      "name": "No Speech Detected Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 500]
+    }
+  ],
+  "connections": {
+    "WebSocket Voice Input": {
+      "main": [
+        [
+          {
+            "node": "Enhanced Audio Preprocessing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enhanced Audio Preprocessing": {
+      "main": [
+        [
+          {
+            "node": "Voice Activity Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voice Activity Detection": {
+      "main": [
+        [
+          {
+            "node": "Validate Speech Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Speech Detection": {
+      "main": [
+        [
+          {
+            "node": "Enhanced Speech-to-Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Speech Detected Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enhanced Speech-to-Text": {
+      "main": [
+        [
+          {
+            "node": "RAG Knowledge Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG Knowledge Search": {
+      "main": [
+        [
+          {
+            "node": "Build Enhanced Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Enhanced Context": {
+      "main": [
+        [
+          {
+            "node": "Enhanced LLM Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enhanced LLM Processing": {
+      "main": [
+        [
+          {
+            "node": "Optimize Response for Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optimize Response for Voice": {
+      "main": [
+        [
+          {
+            "node": "Enhanced Text-to-Speech",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enhanced Text-to-Speech": {
+      "main": [
+        [
+          {
+            "node": "Format Enhanced Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Enhanced Response": {
+      "main": [
+        [
+          {
+            "node": "Send Enhanced Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Enhanced Interaction Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "{{ $vars.ERROR_HANDLING_WORKFLOW_ID }}"
+  },
+  "staticData": {},
+  "tags": ["voice-ai", "enhanced", "real-time"],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-27T00:00:00.000Z",
+  "versionId": "2.0"
+}
