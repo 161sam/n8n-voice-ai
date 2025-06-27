@@ -1,0 +1,111 @@
+{
+  "name": "Interaction Logging Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "m3n4o5p6-q7r8-9012-mnop-321234567802",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "voice_interactions",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "interaction_id": "={{ $json.interactionId }}",
+            "session_id": "={{ $json.sessionId }}",
+            "user_input": "={{ $json.userInput }}",
+            "ai_response": "={{ $json.aiResponse }}",
+            "processing_time": "={{ $json.processingTime }}",
+            "audio_format": "={{ $json.audioFormat }}",
+            "audio_size": "={{ $json.audioSize }}",
+            "created_at": "={{ $json.timestamp }}"
+          }
+        }
+      },
+      "id": "n4o5p6q7-r8s9-0123-nopq-432234567803",
+      "name": "Insert Interaction Record",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            {
+              "name": "log_status",
+              "stringValue": "success"
+            },
+            {
+              "name": "record_id",
+              "numberValue": "={{ $json.id }}"
+            },
+            {
+              "name": "timestamp",
+              "stringValue": "={{ new Date().toISOString() }}"
+            }
+          ]
+        }
+      },
+      "id": "o5p6q7r8-s9t0-1234-opqr-543234567804",
+      "name": "Format Log Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 300]
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Insert Interaction Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Interaction Record": {
+      "main": [
+        [
+          {
+            "node": "Format Log Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": null,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-25T00:00:00.000Z",
+  "versionId": "1"
+}
