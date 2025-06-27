@@ -1,0 +1,299 @@
+{
+  "name": "Data Management & Cleanup System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "cleanup-trigger-001",
+      "name": "Daily Cleanup Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst cleanupId = 'cleanup_' + Date.now();\n\nreturn {\n  json: {\n    cleanupId: cleanupId,\n    timestamp: now.toISOString(),\n    retentionDays: {\n      interactions: 90,\n      errorLogs: 30,\n      healthChecks: 7,\n      sessions: 30\n    }\n  }\n};"
+      },
+      "id": "prepare-cleanup-tasks-002",
+      "name": "Prepare Cleanup Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM voice_interactions_v2 WHERE created_at < NOW() - INTERVAL '90 days'",
+        "additionalFields": {}
+      },
+      "id": "cleanup-old-interactions-003",
+      "name": "Cleanup Old Interactions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 200],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM error_logs WHERE created_at < NOW() - INTERVAL '30 days'",
+        "additionalFields": {}
+      },
+      "id": "cleanup-error-logs-004",
+      "name": "Cleanup Error Logs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM health_checks WHERE timestamp < NOW() - INTERVAL '7 days'",
+        "additionalFields": {}
+      },
+      "id": "cleanup-health-checks-005",
+      "name": "Cleanup Health Checks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM voice_sessions WHERE expires_at < NOW()",
+        "additionalFields": {}
+      },
+      "id": "cleanup-expired-sessions-006",
+      "name": "Cleanup Expired Sessions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cleanupId = $('Prepare Cleanup Tasks').item.json.cleanupId;\nconst timestamp = $('Prepare Cleanup Tasks').item.json.timestamp;\n\nlet interactionsDeleted = 0;\nlet errorLogsDeleted = 0;\nlet healthChecksDeleted = 0;\nlet sessionsDeleted = 0;\n\ntry {\n  const interactionsResult = $('Cleanup Old Interactions').item.json;\n  interactionsDeleted = interactionsResult.length || 0;\n} catch (e) {\n  interactionsDeleted = 0;\n}\n\ntry {\n  const errorLogsResult = $('Cleanup Error Logs').item.json;\n  errorLogsDeleted = errorLogsResult.length || 0;\n} catch (e) {\n  errorLogsDeleted = 0;\n}\n\ntry {\n  const healthChecksResult = $('Cleanup Health Checks').item.json;\n  healthChecksDeleted = healthChecksResult.length || 0;\n} catch (e) {\n  healthChecksDeleted = 0;\n}\n\ntry {\n  const sessionsResult = $('Cleanup Expired Sessions').item.json;\n  sessionsDeleted = sessionsResult.length || 0;\n} catch (e) {\n  sessionsDeleted = 0;\n}\n\nconst totalDeleted = interactionsDeleted + errorLogsDeleted + healthChecksDeleted + sessionsDeleted;\n\nreturn {\n  json: {\n    cleanupId: cleanupId,\n    timestamp: timestamp,\n    completed_at: new Date().toISOString(),\n    status: 'completed',\n    results: {\n      interactions_deleted: interactionsDeleted,\n      error_logs_deleted: errorLogsDeleted,\n      health_checks_deleted: healthChecksDeleted,\n      sessions_deleted: sessionsDeleted,\n      total_deleted: totalDeleted\n    }\n  }\n};"
+      },
+      "id": "generate-cleanup-report-007",
+      "name": "Generate Cleanup Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 350]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "cleanup_logs",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "cleanup_id": "={{ $json.cleanupId }}",
+            "timestamp": "={{ $json.timestamp }}",
+            "completed_at": "={{ $json.completed_at }}",
+            "status": "={{ $json.status }}",
+            "results": "={{ JSON.stringify($json.results) }}"
+          }
+        },
+        "additionalFields": {}
+      },
+      "id": "log-cleanup-results-008",
+      "name": "Log Cleanup Results",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [1120, 350],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.results.total_deleted }}",
+              "operation": "larger",
+              "value2": 5
+            }
+          ]
+        }
+      },
+      "id": "check-notification-needed-009",
+      "name": "Check if Notification Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1340, 350]
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\n  \"text\": \"🧹 Data Cleanup Completed\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Daily Cleanup Report*\\n• Total Records Deleted: {{ $json.results.total_deleted }}\\n• Interactions: {{ $json.results.interactions_deleted }}\\n• Error Logs: {{ $json.results.error_logs_deleted }}\\n• Health Checks: {{ $json.results.health_checks_deleted }}\\n• Sessions: {{ $json.results.sessions_deleted }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "send-cleanup-notification-010",
+      "name": "Send Cleanup Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1560, 350]
+    }
+  ],
+  "connections": {
+    "Daily Cleanup Trigger": {
+      "main": [
+        [
+          {
+            "node": "Prepare Cleanup Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Cleanup Tasks": {
+      "main": [
+        [
+          {
+            "node": "Cleanup Old Interactions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Error Logs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Health Checks",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cleanup Expired Sessions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Old Interactions": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Error Logs": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Health Checks": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Expired Sessions": {
+      "main": [
+        [
+          {
+            "node": "Generate Cleanup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Cleanup Report": {
+      "main": [
+        [
+          {
+            "node": "Log Cleanup Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Cleanup Results": {
+      "main": [
+        [
+          {
+            "node": "Check if Notification Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Notification Needed": {
+      "main": [
+        [
+          {
+            "node": "Send Cleanup Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {},
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-27T00:00:00.000Z",
+  "versionId": "1.0"
+}
