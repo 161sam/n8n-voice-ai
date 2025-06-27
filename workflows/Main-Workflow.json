@@ -1,0 +1,388 @@
+{
+  "name": "Voice AI Agent - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "voice-input",
+        "responseMode": "whenLastNodeFinishes",
+        "options": {
+          "binaryPropertyName": "audio"
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Voice Input Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "voice-ai-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "all"
+          },
+          "conditions": [
+            {
+              "id": "condition1",
+              "leftValue": "={{ $binary.audio }}",
+              "rightValue": "",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "b2c3d4e5-f6g7-8901-bcde-f21234567891",
+      "name": "Validate Audio Input",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const audioData = $binary.audio;\nconst sessionId = $json.sessionId || 'default';\nconst timestamp = new Date().toISOString();\n\n// Validate audio file\nif (!audioData || audioData.fileSize > 25 * 1024 * 1024) {\n  throw new Error('Invalid audio file or size too large');\n}\n\n// Generate unique interaction ID\nconst interactionId = `${sessionId}_${Date.now()}`;\n\nreturn {\n  json: {\n    interactionId,\n    sessionId,\n    timestamp,\n    audioFormat: audioData.mimeType,\n    audioSize: audioData.fileSize,\n    fileName: audioData.fileName || `audio_${interactionId}.${audioData.mimeType.split('/')[1]}`\n  },\n  binary: {\n    audio: audioData\n  }\n};"
+      },
+      "id": "c3d4e5f6-g7h8-9012-cdef-321234567892",
+      "name": "Process Audio Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 240]
+    },
+    {
+      "parameters": {
+        "command": "ffmpeg -i /tmp/input_{{ $json.interactionId }}.{{ $json.audioFormat.split('/')[1] }} -ar 16000 -ac 1 -c:a pcm_s16le /tmp/processed_{{ $json.interactionId }}.wav"
+      },
+      "id": "d4e5f6g7-h8i9-0123-defg-432234567893",
+      "name": "Preprocess Audio with FFmpeg",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [900, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "url": "http://whisper-server:8080/v1/audio/transcriptions",
+        "sendBinaryData": true,
+        "binaryPropertyName": "audio",
+        "sendBody": true,
+        "bodyContentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "whisper-1"
+            },
+            {
+              "name": "language", 
+              "value": "en"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "e5f6g7h8-i9j0-1234-efgh-543234567894",
+      "name": "Speech to Text (Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "combineOperation": "all"
+          },
+          "conditions": [
+            {
+              "id": "condition2",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "f6g7h8i9-j0k1-2345-fghi-654234567895",
+      "name": "Validate Transcription",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1340, 240]
+    },
+    {
+      "parameters": {
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $vars.LLM_MODEL || 'llama3.2:8b' }}\",\n  \"prompt\": \"You are a helpful AI assistant. The user said: '{{ $json.text }}'. Session: {{ $('Process Audio Metadata').item.json.sessionId }}. Provide a helpful response.\",\n  \"stream\": false,\n  \"options\": {\n    \"temperature\": 0.7,\n    \"num_predict\": 500,\n    \"top_p\": 0.9\n  }\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "g7h8i9j0-k1l2-3456-ghij-765234567896",
+      "name": "LLM Processing (Ollama)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "url": "http://kokoro-tts:8880/v1/audio/speech",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"model\": \"kokoro\",\n  \"input\": \"{{ $json.response }}\",\n  \"voice\": \"{{ $vars.TTS_VOICE || 'af_bella' }}\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "responseFormat": "file",
+            "outputPropertyName": "audio_response"
+          }
+        }
+      },
+      "id": "h8i9j0k1-l2m3-4567-hijk-876234567897",
+      "name": "Text to Speech (Kokoro)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 240],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            {
+              "name": "interactionId",
+              "stringValue": "={{ $('Process Audio Metadata').item.json.interactionId }}"
+            },
+            {
+              "name": "sessionId", 
+              "stringValue": "={{ $('Process Audio Metadata').item.json.sessionId }}"
+            },
+            {
+              "name": "timestamp",
+              "stringValue": "={{ $('Process Audio Metadata').item.json.timestamp }}"
+            },
+            {
+              "name": "userInput",
+              "stringValue": "={{ $('Speech to Text (Whisper)').item.json.text }}"
+            },
+            {
+              "name": "aiResponse",
+              "stringValue": "={{ $('LLM Processing (Ollama)').item.json.response }}"
+            },
+            {
+              "name": "processingTime",
+              "numberValue": "={{ new Date().getTime() - new Date($('Process Audio Metadata').item.json.timestamp).getTime() }}"
+            },
+            {
+              "name": "status",
+              "stringValue": "completed"
+            }
+          ]
+        }
+      },
+      "id": "i9j0k1l2-m3n4-5678-ijkl-987234567898",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2000, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "j0k1l2m3-n4o5-6789-jklm-098234567899",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2220, 240]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "{{ $vars.LOGGING_WORKFLOW_ID }}",
+        "fields": {
+          "values": [
+            {
+              "name": "interactionData",
+              "stringValue": "={{ JSON.stringify($json) }}"
+            }
+          ]
+        },
+        "options": {
+          "waitForCompletion": false
+        }
+      },
+      "id": "k1l2m3n4-o5p6-7890-klmn-109234567800",
+      "name": "Log Interaction",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2000, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"error\": \"Audio processing failed\", \"message\": \"Please try again with a valid audio file\" }",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "l2m3n4o5-p6q7-8901-lmno-210234567801",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [680, 460]
+    }
+  ],
+  "connections": {
+    "Voice Input Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Audio Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Audio Input": {
+      "main": [
+        [
+          {
+            "node": "Process Audio Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Audio Metadata": {
+      "main": [
+        [
+          {
+            "node": "Preprocess Audio with FFmpeg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preprocess Audio with FFmpeg": {
+      "main": [
+        [
+          {
+            "node": "Speech to Text (Whisper)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Speech to Text (Whisper)": {
+      "main": [
+        [
+          {
+            "node": "Validate Transcription",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Transcription": {
+      "main": [
+        [
+          {
+            "node": "LLM Processing (Ollama)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Processing (Ollama)": {
+      "main": [
+        [
+          {
+            "node": "Text to Speech (Kokoro)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text to Speech (Kokoro)": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Interaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": null,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-25T00:00:00.000Z",
+  "versionId": "1"
+}
