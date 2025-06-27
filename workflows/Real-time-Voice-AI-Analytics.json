@@ -1,0 +1,207 @@
+{
+  "name": "Real-time Voice AI Analytics",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "analytics-trigger-001",
+      "name": "Analytics Collection Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM voice_interactions_v2 WHERE created_at > NOW() - INTERVAL '30 seconds' LIMIT 1000;",
+        "options": {}
+      },
+      "id": "recent-interactions-002", 
+      "name": "Get Recent Interactions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Calculate real-time metrics\nconst interactions = $input.all().map(item => item.json);\nconst now = new Date();\nconst thirtySecondsAgo = new Date(now.getTime() - 30000);\n\n// Performance metrics\nconst totalInteractions = interactions.length;\nconst avgProcessingTime = interactions.reduce((sum, i) => sum + (i.processing_metrics?.total_time || 0), 0) / Math.max(totalInteractions, 1);\nconst avgConfidence = interactions.reduce((sum, i) => sum + (i.processing_metrics?.stt_confidence || 0), 0) / Math.max(totalInteractions, 1);\n\n// Language distribution\nconst languageStats = {};\ninteractions.forEach(i => {\n  const lang = i.processing_metrics?.language || 'unknown';\n  languageStats[lang] = (languageStats[lang] || 0) + 1;\n});\n\n// Model usage statistics\nconst modelStats = {};\ninteractions.forEach(i => {\n  const model = i.processing_metrics?.llm_model || 'unknown';\n  modelStats[model] = (modelStats[model] || 0) + 1;\n});\n\n// Quality metrics\nconst qualityMetrics = {\n  high_confidence: interactions.filter(i => (i.processing_metrics?.stt_confidence || 0) > 0.9).length,\n  medium_confidence: interactions.filter(i => {\n    const conf = i.processing_metrics?.stt_confidence || 0;\n    return conf >= 0.7 && conf <= 0.9;\n  }).length,\n  low_confidence: interactions.filter(i => (i.processing_metrics?.stt_confidence || 0) < 0.7).length\n};\n\n// Error tracking\nconst errors = interactions.filter(i => i.processing_metrics?.errors || i.status === 'error').length;\nconst errorRate = totalInteractions > 0 ? (errors / totalInteractions) * 100 : 0;\n\n// User satisfaction (if available)\nconst ratingsData = interactions.filter(i => i.user_feedback?.rating);\nconst avgRating = ratingsData.length > 0 ? \n  ratingsData.reduce((sum, i) => sum + i.user_feedback.rating, 0) / ratingsData.length : null;\n\n// Response time distribution\nconst responseTimeBuckets = {\n  fast: interactions.filter(i => (i.processing_metrics?.total_time || 0) < 1000).length,    // < 1s\n  medium: interactions.filter(i => {\n    const time = i.processing_metrics?.total_time || 0;\n    return time >= 1000 && time < 3000;\n  }).length,  // 1-3s\n  slow: interactions.filter(i => (i.processing_metrics?.total_time || 0) >= 3000).length     // > 3s\n};\n\n// Feature usage\nconst featureUsage = {\n  rag_used: interactions.filter(i => i.processing_metrics?.rag_used).length,\n  voice_activity_detected: interactions.filter(i => i.processing_metrics?.vad_confidence > 0.5).length,\n  multi_language: Object.keys(languageStats).length\n};\n\nconst analytics = {\n  timestamp: now.toISOString(),\n  timeWindow: '30s',\n  performance: {\n    totalInteractions,\n    avgProcessingTime: Math.round(avgProcessingTime),\n    avgConfidence: Math.round(avgConfidence * 100) / 100,\n    errorRate: Math.round(errorRate * 100) / 100,\n    throughput: Math.round((totalInteractions / 30) * 100) / 100 // interactions per second\n  },\n  quality: {\n    ...qualityMetrics,\n    avgRating,\n    ratingsCount: ratingsData.length\n  },\n  distribution: {\n    languages: languageStats,\n    models: modelStats,\n    responseTimes: responseTimeBuckets\n  },\n  features: featureUsage\n};\n\nreturn { json: analytics };"
+      },
+      "id": "calculate-metrics-003",
+      "name": "Calculate Real-time Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://prometheus:9090/api/v1/write",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "text/plain"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyContentType": "raw",
+        "body": "=# Voice AI Metrics\n# Performance\nvoice_ai_interactions_total {{ $json.performance.totalInteractions }} {{ Date.now() }}\nvoice_ai_avg_processing_time_ms {{ $json.performance.avgProcessingTime }} {{ Date.now() }}\nvoice_ai_avg_confidence {{ $json.performance.avgConfidence }} {{ Date.now() }}\nvoice_ai_error_rate_percent {{ $json.performance.errorRate }} {{ Date.now() }}\nvoice_ai_throughput_per_second {{ $json.performance.throughput }} {{ Date.now() }}\n\n# Quality\nvoice_ai_high_confidence_interactions {{ $json.quality.high_confidence }} {{ Date.now() }}\nvoice_ai_medium_confidence_interactions {{ $json.quality.medium_confidence }} {{ Date.now() }}\nvoice_ai_low_confidence_interactions {{ $json.quality.low_confidence }} {{ Date.now() }}\n{{ $json.quality.avgRating ? `voice_ai_avg_rating ${$json.quality.avgRating} ${Date.now()}` : '' }}\n\n# Features\nvoice_ai_rag_usage {{ $json.features.rag_used }} {{ Date.now() }}\nvoice_ai_vad_detections {{ $json.features.voice_activity_detected }} {{ Date.now() }}\nvoice_ai_languages_used {{ $json.features.multi_language }} {{ Date.now() }}\n\n# Response Times\nvoice_ai_fast_responses {{ $json.distribution.responseTimes.fast }} {{ Date.now() }}\nvoice_ai_medium_responses {{ $json.distribution.responseTimes.medium }} {{ Date.now() }}\nvoice_ai_slow_responses {{ $json.distribution.responseTimes.slow }} {{ Date.now() }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "push-to-prometheus-004",
+      "name": "Push Metrics to Prometheus",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO analytics_snapshots (timestamp, time_window, metrics_data, total_interactions, avg_processing_time, error_rate, avg_confidence) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "options": {
+          "queryParameters": "={{ $json.timestamp }},{{ $json.timeWindow }},{{ JSON.stringify($json) }},{{ $json.performance.totalInteractions }},{{ $json.performance.avgProcessingTime }},{{ $json.performance.errorRate }},{{ $json.performance.avgConfidence }}"
+        }
+      },
+      "id": "store-analytics-005",
+      "name": "Store Analytics Snapshot",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1120, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.performance.errorRate > 5.0 || $json.performance.avgConfidence < 0.8 || $json.performance.avgProcessingTime > 3000 }}",
+              "operation": "equal",
+              "value2": "true"
+            }
+          ]
+        }
+      },
+      "id": "check-alerts-006",
+      "name": "Check Alert Conditions",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type", 
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 Voice AI Alert Triggered\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"Voice AI Performance Alert\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Performance Issues Detected*\\n\\n• Error Rate: {{ $('Calculate Real-time Metrics').item.json.performance.errorRate }}%\\n• Avg Confidence: {{ $('Calculate Real-time Metrics').item.json.performance.avgConfidence }}\\n• Avg Processing Time: {{ $('Calculate Real-time Metrics').item.json.performance.avgProcessingTime }}ms\\n• Total Interactions: {{ $('Calculate Real-time Metrics').item.json.performance.totalInteractions }}\\n\\n*Time:* {{ $('Calculate Real-time Metrics').item.json.timestamp }}\"\n      }\n    },\n    {\n      \"type\": \"actions\",\n      \"elements\": [\n        {\n          \"type\": \"button\",\n          \"text\": {\n            \"type\": \"plain_text\",\n            \"text\": \"View Dashboard\"\n          },\n          \"url\": \"http://grafana:3000/d/voice-ai-overview\"\n        }\n      ]\n    }\n  ]\n}"
+      },
+      "id": "send-alert-007",
+      "name": "Send Alert Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 240],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Analytics Collection Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Recent Interactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Recent Interactions": {
+      "main": [
+        [
+          {
+            "node": "Calculate Real-time Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Real-time Metrics": {
+      "main": [
+        [
+          {
+            "node": "Push Metrics to Prometheus",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store Analytics Snapshot",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Alert Conditions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Alert Conditions": {
+      "main": [
+        [
+          {
+            "node": "Send Alert Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": null,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": false
+  },
+  "staticData": null,
+  "tags": ["analytics", "monitoring", "real-time"],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-27T00:00:00.000Z",
+  "versionId": "1.0"
+}
