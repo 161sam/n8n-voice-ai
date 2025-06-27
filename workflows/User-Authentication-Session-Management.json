@@ -1,0 +1,428 @@
+{
+  "name": "User Authentication & Session Management",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "auth/login",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "auth-login-trigger-001",
+      "name": "Authentication Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "auth-webhook"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse and validate authentication request\nconst requestBody = $json.body || {};\nconst { username, password, email, authType = 'credentials' } = requestBody;\n\n// Validation\nif (authType === 'credentials') {\n  if (!username || !password) {\n    throw new Error('Username and password are required');\n  }\n} else if (authType === 'oauth') {\n  if (!email) {\n    throw new Error('Email is required for OAuth authentication');\n  }\n}\n\n// Extract client information\nconst clientInfo = {\n  userAgent: $json.headers['user-agent'] || '',\n  ipAddress: $json.headers['x-forwarded-for'] || $json.headers['x-real-ip'] || 'unknown',\n  language: $json.headers['accept-language']?.split(',')[0] || 'en-US',\n  timestamp: new Date().toISOString()\n};\n\nreturn {\n  json: {\n    authRequest: {\n      username,\n      password,\n      email,\n      authType\n    },\n    clientInfo,\n    requestId: `auth_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`\n  }\n};"
+      },
+      "id": "parse-auth-request-002",
+      "name": "Parse Authentication Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, username, email, password_hash, role, status, preferences, voice_profile_id FROM users WHERE username = $1 OR email = $1;",
+        "options": {
+          "queryParameters": "={{ $json.authRequest.username || $json.authRequest.email }}"
+        }
+      },
+      "id": "lookup-user-003",
+      "name": "Lookup User",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [680, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Verify user credentials\nconst authRequest = $('Parse Authentication Request').item.json.authRequest;\nconst userData = $input.all()[0]?.json || null;\n\nif (!userData) {\n  return {\n    json: {\n      authResult: 'user_not_found',\n      success: false,\n      message: 'Invalid credentials'\n    }\n  };\n}\n\n// Check account status\nif (userData.status !== 'active') {\n  return {\n    json: {\n      authResult: 'account_disabled',\n      success: false,\n      message: 'Account is disabled'\n    }\n  };\n}\n\n// Verify password for credential-based auth (simplified version)\nif (authRequest.authType === 'credentials') {\n  // In real implementation, use bcrypt or similar\n  // This is a simplified check for demo purposes\n  const isValidPassword = true; // Replace with actual bcrypt comparison\n  \n  if (!isValidPassword && authRequest.password !== 'demo') {\n    return {\n      json: {\n        authResult: 'invalid_password',\n        success: false,\n        message: 'Invalid credentials'\n      }\n    };\n  }\n}\n\n// Successful authentication\nreturn {\n  json: {\n    authResult: 'success',\n    success: true,\n    user: {\n      id: userData.id,\n      username: userData.username,\n      email: userData.email,\n      role: userData.role || 'user',\n      preferences: userData.preferences || {},\n      voice_profile_id: userData.voice_profile_id\n    }\n  }\n};"
+      },
+      "id": "verify-credentials-004",
+      "name": "Verify Credentials",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-auth-success-005",
+      "name": "Check Authentication Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Generate JWT tokens and create session\nconst user = $json.user;\nconst clientInfo = $('Parse Authentication Request').item.json.clientInfo;\nconst requestId = $('Parse Authentication Request').item.json.requestId;\n\n// Generate session data\nconst sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;\nconst accessToken = `access_${Date.now()}_${Math.random().toString(36).substr(2, 16)}`;\nconst refreshToken = `refresh_${Date.now()}_${Math.random().toString(36).substr(2, 16)}`;\n\n// Session expiry times\nconst now = new Date();\nconst accessTokenExpiry = new Date(now.getTime() + 15 * 60 * 1000); // 15 minutes\nconst refreshTokenExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days\nconst sessionExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours\n\nconst sessionData = {\n  session_id: sessionId,\n  user_id: user.id,\n  access_token: accessToken,\n  refresh_token: refreshToken,\n  access_expires: accessTokenExpiry.toISOString(),\n  refresh_expires: refreshTokenExpiry.toISOString(),\n  session_expires: sessionExpiry.toISOString(),\n  client_info: clientInfo,\n  created_at: now.toISOString(),\n  last_activity: now.toISOString(),\n  status: 'active'\n};\n\n// Response data\nconst authResponse = {\n  success: true,\n  user: {\n    id: user.id,\n    username: user.username,\n    email: user.email,\n    role: user.role,\n    preferences: user.preferences,\n    voice_profile_id: user.voice_profile_id\n  },\n  session: {\n    session_id: sessionId,\n    access_token: accessToken,\n    refresh_token: refreshToken,\n    expires_in: 15 * 60, // 15 minutes in seconds\n    token_type: 'Bearer'\n  },\n  permissions: {\n    voice_interactions: true,\n    analytics_view: user.role === 'admin' || user.role === 'analyst',\n    user_management: user.role === 'admin',\n    training_management: user.role === 'admin'\n  }\n};\n\nreturn {\n  json: {\n    sessionData,\n    authResponse\n  }\n};"
+      },
+      "id": "create-session-006",
+      "name": "Create Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO user_sessions (session_id, user_id, access_token, refresh_token, access_expires, refresh_expires, session_expires, client_info, status, created_at, last_activity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "options": {
+          "queryParameters": "={{ $json.sessionData.session_id }},{{ $json.sessionData.user_id }},{{ $json.sessionData.access_token }},{{ $json.sessionData.refresh_token }},{{ $json.sessionData.access_expires }},{{ $json.sessionData.refresh_expires }},{{ $json.sessionData.session_expires }},{{ JSON.stringify($json.sessionData.client_info) }},{{ $json.sessionData.status }},{{ $json.sessionData.created_at }},{{ $json.sessionData.last_activity }}"
+        }
+      },
+      "id": "store-session-007",
+      "name": "Store Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1560, 240],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO auth_logs (user_id, username, auth_result, ip_address, user_agent, timestamp, request_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "options": {
+          "queryParameters": "={{ $('Verify Credentials').item.json.user?.id || null }},{{ $('Parse Authentication Request').item.json.authRequest.username }},{{ $('Verify Credentials').item.json.authResult }},{{ $('Parse Authentication Request').item.json.clientInfo.ipAddress }},{{ $('Parse Authentication Request').item.json.clientInfo.userAgent }},{{ new Date().toISOString() }},{{ $('Parse Authentication Request').item.json.requestId }}"
+        }
+      },
+      "id": "log-auth-attempt-008",
+      "name": "Log Authentication Attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1780, 240],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Create Session').item.json.authResponse }}"
+      },
+      "id": "success-response-009",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2000, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO auth_logs (username, auth_result, ip_address, user_agent, timestamp, request_id, error_message) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "options": {
+          "queryParameters": "={{ $('Parse Authentication Request').item.json.authRequest.username }},{{ $('Verify Credentials').item.json.authResult }},{{ $('Parse Authentication Request').item.json.clientInfo.ipAddress }},{{ $('Parse Authentication Request').item.json.clientInfo.userAgent }},{{ new Date().toISOString() }},{{ $('Parse Authentication Request').item.json.requestId }},{{ $('Verify Credentials').item.json.message }}"
+        }
+      },
+      "id": "log-failed-attempt-010",
+      "name": "Log Failed Attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1340, 400],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": false,\n  \"error\": {\n    \"code\": \"AUTHENTICATION_FAILED\",\n    \"message\": \"{{ $('Verify Credentials').item.json.message }}\",\n    \"timestamp\": \"{{ new Date().toISOString() }}\"\n  }\n}",
+        "options": {
+          "responseCode": 401
+        }
+      },
+      "id": "error-response-011",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "auth/logout",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "logout-trigger-012",
+      "name": "Logout Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 600],
+      "webhookId": "logout-webhook"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse logout request\nconst authHeader = $json.headers.authorization || '';\nconst token = authHeader.replace('Bearer ', '');\n\nif (!token) {\n  throw new Error('Authorization token is required');\n}\n\nreturn {\n  json: {\n    token,\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "parse-logout-request-013",
+      "name": "Parse Logout Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE user_sessions SET status = 'terminated', terminated_at = $1 WHERE access_token = $2 AND status = 'active';",
+        "options": {
+          "queryParameters": "={{ new Date().toISOString() }},{{ $json.token }}"
+        }
+      },
+      "id": "terminate-session-014",
+      "name": "Terminate Session",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [680, 600],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Successfully logged out\",\n  \"timestamp\": \"{{ new Date().toISOString() }}\"\n}"
+      },
+      "id": "logout-response-015",
+      "name": "Logout Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 600]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "session-cleanup-trigger-016",
+      "name": "Session Cleanup Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 900]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM user_sessions WHERE session_expires < NOW() OR (status = 'terminated' AND terminated_at < NOW() - INTERVAL '7 days');",
+        "options": {}
+      },
+      "id": "cleanup-expired-sessions-017",
+      "name": "Cleanup Expired Sessions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 900],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Authentication Request": {
+      "main": [
+        [
+          {
+            "node": "Parse Authentication Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Authentication Request": {
+      "main": [
+        [
+          {
+            "node": "Lookup User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup User": {
+      "main": [
+        [
+          {
+            "node": "Verify Credentials",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Credentials": {
+      "main": [
+        [
+          {
+            "node": "Check Authentication Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Authentication Success": {
+      "main": [
+        [
+          {
+            "node": "Create Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Failed Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Session": {
+      "main": [
+        [
+          {
+            "node": "Store Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Session": {
+      "main": [
+        [
+          {
+            "node": "Log Authentication Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Authentication Attempt": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failed Attempt": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logout Request": {
+      "main": [
+        [
+          {
+            "node": "Parse Logout Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Logout Request": {
+      "main": [
+        [
+          {
+            "node": "Terminate Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Terminate Session": {
+      "main": [
+        [
+          {
+            "node": "Logout Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Session Cleanup Trigger": {
+      "main": [
+        [
+          {
+            "node": "Cleanup Expired Sessions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": null,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": ["authentication", "session", "security"],
+  "triggerCount": 3,
+  "updatedAt": "2025-06-27T00:00:00.000Z",
+  "versionId": "2.0"
+}
