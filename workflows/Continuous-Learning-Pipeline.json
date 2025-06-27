@@ -1,5 +1,5 @@
 {
-  "name": "Weekly Fine-tuning Pipeline",
+  "name": "Continuous Learning Pipeline",
   "nodes": [
     {
       "parameters": {
@@ -12,41 +12,19 @@
           ]
         }
       },
-      "id": "t0u1v2w3-x4y5-6789-tuvw-098234567809",
-      "name": "Weekly Fine-tuning Schedule",
+      "id": "learning-trigger-001",
+      "name": "Weekly Learning Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [240, 300]
     },
     {
       "parameters": {
-        "operation": "select",
-        "schema": {
-          "__rl": true,
-          "value": "public",
-          "mode": "list"
-        },
-        "table": {
-          "__rl": true,
-          "value": "training_feedback",
-          "mode": "list"
-        },
-        "where": {
-          "conditions": [
-            {
-              "column": "created_at",
-              "condition": "afterDate",
-              "value": "={{ new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString() }}"
-            },
-            {
-              "column": "status",
-              "condition": "equal",
-              "value": "validated"
-            }
-          ]
-        }
+        "operation": "executeQuery",
+        "query": "SELECT * FROM voice_interactions_v2 WHERE created_at >= NOW() - INTERVAL '7 days' AND user_feedback IS NOT NULL ORDER BY created_at DESC LIMIT 5000;",
+        "options": {}
       },
-      "id": "u1v2w3x4-y5z6-7890-uvwx-109234567810",
+      "id": "collect-training-data-002",
       "name": "Collect Training Data",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
@@ -60,85 +38,93 @@
     },
     {
       "parameters": {
-        "conditions": {
-          "options": {
-            "combineOperation": "all"
-          },
-          "conditions": [
-            {
-              "id": "condition3",
-              "leftValue": "={{ $json.length }}",
-              "rightValue": "{{ $vars.MIN_TRAINING_SAMPLES || 50 }}",
-              "operation": "largerEqual"
-            }
-          ]
-        }
+        "language": "javaScript",
+        "jsCode": "// Enhanced training data preparation with quality filtering\nconst rawData = $input.all().map(item => item.json);\nconsole.log(`Processing ${rawData.length} raw interactions`);\n\n// Quality filtering criteria\nfunction filterQualityData(interactions) {\n  return interactions.filter(interaction => {\n    const feedback = interaction.user_feedback || {};\n    const metrics = interaction.processing_metrics || {};\n    \n    // Quality criteria\n    const hasPositiveFeedback = feedback.rating >= 4 || feedback.helpful === true;\n    const hasGoodConfidence = metrics.stt_confidence >= 0.8;\n    const hasReasonableLength = interaction.transcription && interaction.transcription.length >= 10;\n    const hasValidResponse = interaction.llm_response && interaction.llm_response.length >= 10;\n    const noErrors = !metrics.errors || metrics.errors.length === 0;\n    \n    return hasPositiveFeedback && hasGoodConfidence && hasReasonableLength && hasValidResponse && noErrors;\n  });\n}\n\n// Extract conversation pairs\nfunction extractTrainingPairs(interactions) {\n  return interactions.map(interaction => {\n    const userMessage = interaction.transcription;\n    const assistantResponse = interaction.user_feedback?.corrected_response || interaction.llm_response;\n    const context = interaction.processing_metrics?.context || '';\n    \n    return {\n      messages: [\n        {\n          role: 'system',\n          content: 'You are a helpful AI assistant specialized in voice interactions. Keep responses natural and conversational.'\n        },\n        {\n          role: 'user', \n          content: userMessage\n        },\n        {\n          role: 'assistant',\n          content: assistantResponse\n        }\n      ],\n      metadata: {\n        interaction_id: interaction.id,\n        confidence: interaction.processing_metrics?.stt_confidence,\n        rating: interaction.user_feedback?.rating,\n        language: interaction.processing_metrics?.language || 'en',\n        timestamp: interaction.created_at\n      }\n    };\n  });\n}\n\n// Group by language and quality\nfunction groupAndBalance(trainingPairs) {\n  const grouped = {};\n  \n  trainingPairs.forEach(pair => {\n    const lang = pair.metadata.language;\n    if (!grouped[lang]) grouped[lang] = [];\n    grouped[lang].push(pair);\n  });\n  \n  // Balance datasets - ensure we don't have too much of one language\n  const maxPerLanguage = 1000;\n  Object.keys(grouped).forEach(lang => {\n    if (grouped[lang].length > maxPerLanguage) {\n      // Sort by rating and take best examples\n      grouped[lang].sort((a, b) => (b.metadata.rating || 0) - (a.metadata.rating || 0));\n      grouped[lang] = grouped[lang].slice(0, maxPerLanguage);\n    }\n  });\n  \n  return grouped;\n}\n\n// Generate training dataset\nconst qualityData = filterQualityData(rawData);\nconst trainingPairs = extractTrainingPairs(qualityData);\nconst groupedData = groupAndBalance(trainingPairs);\n\n// Flatten and shuffle\nconst allPairs = Object.values(groupedData).flat();\nconst shuffled = allPairs.sort(() => 0.5 - Math.random());\n\n// Split train/validation\nconst splitIndex = Math.floor(shuffled.length * 0.85);\nconst trainData = shuffled.slice(0, splitIndex);\nconst validationData = shuffled.slice(splitIndex);\n\n// Create dataset metadata\nconst datasetId = `voice_ai_${new Date().toISOString().split('T')[0].replace(/-/g, '')}`;\nconst datasetMetadata = {\n  id: datasetId,\n  created: new Date().toISOString(),\n  source: 'voice_interactions_feedback',\n  quality: {\n    total_raw: rawData.length,\n    quality_filtered: qualityData.length,\n    final_training: trainData.length,\n    final_validation: validationData.length,\n    filter_rate: Math.round((qualityData.length / rawData.length) * 100)\n  },\n  languages: Object.keys(groupedData),\n  distribution: Object.fromEntries(\n    Object.entries(groupedData).map(([lang, data]) => [lang, data.length])\n  )\n};\n\nconsole.log('Dataset prepared:', datasetMetadata);\n\nreturn {\n  json: {\n    dataset: {\n      metadata: datasetMetadata,\n      train: trainData,\n      validation: validationData\n    },\n    readyForTraining: trainData.length >= 50\n  }\n};"
       },
-      "id": "v2w3x4y5-z6a7-8901-vwxy-210234567811",
-      "name": "Check Training Threshold",
-      "type": "n8n-nodes-base.if",
+      "id": "prepare-dataset-003",
+      "name": "Prepare Enhanced Dataset",
+      "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [680, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Prepare training data in the required format\nconst trainingData = $input.all().map(item => ({\n  prompt: item.json.original_input,\n  completion: item.json.corrected_response || item.json.original_response,\n  metadata: {\n    interactionId: item.json.interaction_id,\n    feedback_score: item.json.feedback_score,\n    timestamp: item.json.created_at\n  }\n}));\n\n// Split into training and validation sets\nconst shuffled = trainingData.sort(() => 0.5 - Math.random());\nconst splitIndex = Math.floor(shuffled.length * 0.8);\n\nconst trainingSet = shuffled.slice(0, splitIndex);\nconst validationSet = shuffled.slice(splitIndex);\n\nreturn {\n  json: {\n    trainingData: trainingSet,\n    validationData: validationSet,\n    totalSamples: trainingData.length,\n    trainingSize: trainingSet.length,\n    validationSize: validationSet.length,\n    datasetId: `dataset_${Date.now()}`\n  }\n};"
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.readyForTraining }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ],
+          "number": [
+            {
+              "value1": "={{ $json.dataset.train.length }}",
+              "operation": "largerEqual",
+              "value2": 50
+            }
+          ]
+        }
       },
-      "id": "w3x4y5z6-a7b8-9012-wxyz-321234567812",
-      "name": "Prepare Training Data",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [900, 240]
+      "id": "check-training-threshold-004",
+      "name": "Check Training Threshold",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
     },
     {
       "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Create fine-tuning configuration for Ollama\nconst dataset = $json.dataset;\nconst baseModel = 'llama3.2:8b';\n\n// Advanced training configuration\nconst trainingConfig = {\n  model: baseModel,\n  dataset_id: dataset.metadata.id,\n  training_data: dataset.train,\n  validation_data: dataset.validation,\n  hyperparameters: {\n    learning_rate: 0.0001,\n    batch_size: 4,\n    epochs: 3,\n    warmup_steps: Math.floor(dataset.train.length * 0.1),\n    weight_decay: 0.01,\n    gradient_accumulation_steps: 2,\n    max_grad_norm: 1.0,\n    lr_scheduler: 'cosine',\n    save_steps: Math.floor(dataset.train.length / 4)\n  },\n  model_config: {\n    context_length: 4096,\n    rope_scaling: 1.0,\n    attention_dropout: 0.1,\n    hidden_dropout: 0.1\n  },\n  training_arguments: {\n    fp16: true,\n    dataloader_num_workers: 4,\n    remove_unused_columns: false,\n    logging_steps: 10,\n    evaluation_strategy: 'steps',\n    eval_steps: Math.floor(dataset.train.length / 8),\n    save_strategy: 'steps',\n    load_best_model_at_end: true,\n    metric_for_best_model: 'eval_loss',\n    greater_is_better: false\n  },\n  job_metadata: {\n    job_id: `finetune_${dataset.metadata.id}`,\n    created_at: new Date().toISOString(),\n    languages: dataset.metadata.languages,\n    data_quality: dataset.metadata.quality\n  }\n};\n\nreturn {\n  json: trainingConfig\n};"
+      },
+      "id": "create-training-config-005",
+      "name": "Create Training Configuration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 240]
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "http://ollama:11434/api/fine-tune",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
         "sendBody": true,
         "bodyContentType": "json",
-        "jsonBody": "={\n  \"model\": \"{{ $vars.BASE_MODEL || 'llama3.2:8b' }}\",\n  \"training_data\": {{ JSON.stringify($json.trainingData) }},\n  \"validation_data\": {{ JSON.stringify($json.validationData) }},\n  \"hyperparameters\": {\n    \"learning_rate\": {{ $vars.LEARNING_RATE || 0.0001 }},\n    \"batch_size\": {{ $vars.BATCH_SIZE || 4 }},\n    \"epochs\": {{ $vars.EPOCHS || 3 }}\n  },\n  \"job_id\": \"finetune_{{ $json.datasetId }}\"\n}",
+        "jsonBody": "={{ JSON.stringify($json) }}",
         "options": {
           "timeout": 7200000
         }
       },
-      "id": "x4y5z6a7-b8c9-0123-xyza-432234567813",
-      "name": "Start Fine-tuning Job",
+      "id": "start-finetuning-006",
+      "name": "Start Enhanced Fine-tuning",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1120, 240],
+      "position": [1340, 240],
       "continueOnFail": true,
       "retryOnFail": true,
       "maxTries": 2
     },
     {
       "parameters": {
-        "operation": "insert",
-        "schema": {
-          "__rl": true,
-          "value": "public",
-          "mode": "list"
-        },
-        "table": {
-          "__rl": true,
-          "value": "model_versions",
-          "mode": "list"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "model_id": "={{ $json.job_id }}",
-            "base_model": "={{ $vars.BASE_MODEL || 'llama3.2:8b' }}",
-            "training_samples": "={{ $('Prepare Training Data').item.json.totalSamples }}",
-            "status": "training",
-            "created_at": "={{ new Date().toISOString() }}",
-            "dataset_id": "={{ $('Prepare Training Data').item.json.datasetId }}"
-          }
+        "operation": "executeQuery",
+        "query": "INSERT INTO training_jobs (job_id, dataset_id, base_model, training_config, job_status, started_at, training_samples, validation_samples, languages) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "options": {
+          "queryParameters": "={{ $('Create Training Configuration').item.json.job_metadata.job_id }},{{ $('Create Training Configuration').item.json.dataset_id }},{{ $('Create Training Configuration').item.json.model }},{{ JSON.stringify($('Create Training Configuration').item.json) }},started,{{ new Date().toISOString() }},{{ $('Prepare Enhanced Dataset').item.json.dataset.train.length }},{{ $('Prepare Enhanced Dataset').item.json.dataset.validation.length }},{{ JSON.stringify($('Prepare Enhanced Dataset').item.json.dataset.metadata.languages) }}"
         }
       },
-      "id": "y5z6a7b8-c9d0-1234-yzab-543234567814",
+      "id": "log-training-job-007",
       "name": "Log Training Job",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [1340, 240],
+      "position": [1560, 240],
       "credentials": {
         "postgres": {
           "id": "postgres-local",
@@ -148,35 +134,139 @@
     },
     {
       "parameters": {
-        "url": "{{ $vars.SLACK_WEBHOOK_URL }}",
+        "method": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
         "sendBody": true,
         "bodyContentType": "json",
-        "jsonBody": "={\n  \"text\": \"🤖 Fine-tuning job started\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Fine-tuning Job Started*\\n\\n*Job ID:* {{ $('Start Fine-tuning Job').item.json.job_id }}\\n*Training Samples:* {{ $('Prepare Training Data').item.json.totalSamples }}\\n*Base Model:* {{ $vars.BASE_MODEL || 'llama3.2:8b' }}\\n*Started:* {{ new Date().toISOString() }}\"\n      }\n    }\n  ]\n}"
+        "jsonBody": "={\n  \"text\": \"🤖 Enhanced Fine-tuning Started\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"Voice AI Model Training\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Enhanced Fine-tuning Job Started*\\n\\n*Job ID:* {{ $('Create Training Configuration').item.json.job_metadata.job_id }}\\n*Base Model:* {{ $('Create Training Configuration').item.json.model }}\\n*Training Samples:* {{ $('Prepare Enhanced Dataset').item.json.dataset.train.length }}\\n*Validation Samples:* {{ $('Prepare Enhanced Dataset').item.json.dataset.validation.length }}\\n*Languages:* {{ $('Prepare Enhanced Dataset').item.json.dataset.metadata.languages.join(', ') }}\\n*Data Quality Rate:* {{ $('Prepare Enhanced Dataset').item.json.dataset.metadata.quality.filter_rate }}%\\n*Started:* {{ new Date().toISOString() }}\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Training Configuration:*\\n• Learning Rate: {{ $('Create Training Configuration').item.json.hyperparameters.learning_rate }}\\n• Batch Size: {{ $('Create Training Configuration').item.json.hyperparameters.batch_size }}\\n• Epochs: {{ $('Create Training Configuration').item.json.hyperparameters.epochs }}\\n• Context Length: {{ $('Create Training Configuration').item.json.model_config.context_length }}\"\n      }\n    }\n  ]\n}"
       },
-      "id": "z6a7b8c9-d0e1-2345-zabc-654234567815",
+      "id": "notify-training-start-008",
       "name": "Notify Training Start",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1560, 240],
+      "position": [1780, 240],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "url": "{{ $vars.SLACK_WEBHOOK_URL }}",
+        "method": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
         "sendBody": true,
         "bodyContentType": "json",
-        "jsonBody": "={\n  \"text\": \"⚠️ Insufficient training data\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Fine-tuning Skipped*\\n\\n*Reason:* Insufficient training data\\n*Available Samples:* {{ $('Collect Training Data').all().length }}\\n*Required Minimum:* {{ $vars.MIN_TRAINING_SAMPLES || 50 }}\\n*Date:* {{ new Date().toISOString() }}\"\n      }\n    }\n  ]\n}"
+        "jsonBody": "={\n  \"text\": \"⚠️ Insufficient training data\",\n  \"blocks\": [\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Fine-tuning Skipped - Insufficient Data*\\n\\n*Available Samples:* {{ $('Prepare Enhanced Dataset').item.json.dataset.train.length }}\\n*Required Minimum:* 50\\n*Quality Filter Rate:* {{ $('Prepare Enhanced Dataset').item.json.dataset.metadata.quality.filter_rate }}%\\n*Raw Interactions:* {{ $('Prepare Enhanced Dataset').item.json.dataset.metadata.quality.total_raw }}\\n\\n*Recommendations:*\\n• Collect more user feedback\\n• Improve interaction quality\\n• Review feedback collection process\\n\\n*Next Check:* Next Sunday at 2 AM\"\n      }\n    }\n  ]\n}"
       },
-      "id": "a7b8c9d0-e1f2-3456-abcd-765234567816",
+      "id": "notify-insufficient-data-009",
       "name": "Notify Insufficient Data",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [900, 400],
+      "position": [1120, 400],
       "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "training-monitor-trigger-010",
+      "name": "Training Monitor Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM training_jobs WHERE job_status IN ('started', 'running') AND started_at >= NOW() - INTERVAL '24 hours';",
+        "options": {}
+      },
+      "id": "check-active-jobs-011",
+      "name": "Check Active Training Jobs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 600],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Monitor training job progress\nconst activeJobs = $input.all().map(item => item.json);\n\nif (activeJobs.length === 0) {\n  return {\n    json: {\n      hasActiveJobs: false,\n      message: 'No active training jobs to monitor'\n    }\n  };\n}\n\nconst jobUpdates = [];\n\nfor (const job of activeJobs) {\n  try {\n    // Check job status via Ollama API\n    const response = await fetch(`http://ollama:11434/api/fine-tune/status/${job.job_id}`);\n    const status = await response.json();\n    \n    jobUpdates.push({\n      job_id: job.job_id,\n      current_status: status.status,\n      progress: status.progress || 0,\n      metrics: status.metrics || {},\n      last_updated: new Date().toISOString(),\n      needs_update: status.status !== job.job_status\n    });\n  } catch (error) {\n    console.log(`Error checking job ${job.job_id}:`, error.message);\n    jobUpdates.push({\n      job_id: job.job_id,\n      current_status: 'error',\n      error: error.message,\n      last_updated: new Date().toISOString(),\n      needs_update: true\n    });\n  }\n}\n\nreturn {\n  json: {\n    hasActiveJobs: true,\n    jobUpdates,\n    completedJobs: jobUpdates.filter(j => j.current_status === 'completed'),\n    failedJobs: jobUpdates.filter(j => j.current_status === 'failed' || j.current_status === 'error')\n  }\n};"
+      },
+      "id": "monitor-job-progress-012",
+      "name": "Monitor Job Progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 600]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasActiveJobs }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-has-active-jobs-013",
+      "name": "Check Has Active Jobs",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE training_jobs SET job_status = $1, progress = $2, metrics = $3, updated_at = $4 WHERE job_id = $5",
+        "options": {
+          "queryParameters": "={{ $item(0).json.current_status }},{{ $item(0).json.progress || 0 }},{{ JSON.stringify($item(0).json.metrics || {}) }},{{ new Date().toISOString() }},{{ $item(0).json.job_id }}"
+        }
+      },
+      "id": "update-job-status-014",
+      "name": "Update Job Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1120, 600],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
     }
   ],
   "connections": {
-    "Weekly Fine-tuning Schedule": {
+    "Weekly Learning Trigger": {
       "main": [
         [
           {
@@ -191,6 +281,17 @@
       "main": [
         [
           {
+            "node": "Prepare Enhanced Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Enhanced Dataset": {
+      "main": [
+        [
+          {
             "node": "Check Training Threshold",
             "type": "main",
             "index": 0
@@ -202,7 +303,7 @@
       "main": [
         [
           {
-            "node": "Prepare Training Data",
+            "node": "Create Training Configuration",
             "type": "main",
             "index": 0
           }
@@ -216,18 +317,18 @@
         ]
       ]
     },
-    "Prepare Training Data": {
+    "Create Training Configuration": {
       "main": [
         [
           {
-            "node": "Start Fine-tuning Job",
+            "node": "Start Enhanced Fine-tuning",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Start Fine-tuning Job": {
+    "Start Enhanced Fine-tuning": {
       "main": [
         [
           {
@@ -248,15 +349,60 @@
           }
         ]
       ]
+    },
+    "Training Monitor Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Active Training Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Active Training Jobs": {
+      "main": [
+        [
+          {
+            "node": "Monitor Job Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Monitor Job Progress": {
+      "main": [
+        [
+          {
+            "node": "Check Has Active Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Has Active Jobs": {
+      "main": [
+        [
+          {
+            "node": "Update Job Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": null,
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true
   },
   "staticData": null,
-  "tags": [],
-  "triggerCount": 1,
-  "updatedAt": "2025-06-25T00:00:00.000Z",
-  "versionId": "1"
+  "tags": ["learning", "fine-tuning", "enhanced", "monitoring"],
+  "triggerCount": 2,
+  "updatedAt": "2025-06-27T00:00:00.000Z",
+  "versionId": "2.0"
 }
