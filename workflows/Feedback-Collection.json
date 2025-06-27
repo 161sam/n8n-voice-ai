@@ -1,0 +1,139 @@
+{
+  "name": "Feedback Collection and Training Data",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "p6q7r8s9-t0u1-2345-pqrs-654234567805",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "voice_interactions",
+          "mode": "list"
+        },
+        "where": {
+          "conditions": [
+            {
+              "column": "interaction_id",
+              "condition": "equal",
+              "value": "={{ $json.interactionId }}"
+            }
+          ]
+        }
+      },
+      "id": "q7r8s9t0-u1v2-3456-qrst-765234567806",
+      "name": "Get Interaction Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "{{ $vars.FEEDBACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={\n  \"interactionId\": \"{{ $json.interaction_id }}\",\n  \"userInput\": \"{{ $json.user_input }}\",\n  \"aiResponse\": \"{{ $json.ai_response }}\",\n  \"feedbackForm\": {\n    \"rating\": null,\n    \"correctedTranscription\": null,\n    \"correctedResponse\": null,\n    \"comments\": null\n  },\n  \"submissionUrl\": \"{{ $vars.N8N_WEBHOOK_URL }}/webhook/feedback-submit\"\n}"
+      },
+      "id": "r8s9t0u1-v2w3-4567-rstu-876234567807",
+      "name": "Send Feedback Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list"
+        },
+        "table": {
+          "__rl": true,
+          "value": "training_feedback",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "interaction_id": "={{ $json.interaction_id }}",
+            "feedback_requested_at": "={{ new Date().toISOString() }}",
+            "status": "pending"
+          }
+        }
+      },
+      "id": "s9t0u1v2-w3x4-5678-stuv-987234567808",
+      "name": "Log Feedback Request",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-local",
+          "name": "PostgreSQL Local"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Interaction Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Interaction Data": {
+      "main": [
+        [
+          {
+            "node": "Send Feedback Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Feedback Request": {
+      "main": [
+        [
+          {
+            "node": "Log Feedback Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": null,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-25T00:00:00.000Z",
+  "versionId": "1"
+}
