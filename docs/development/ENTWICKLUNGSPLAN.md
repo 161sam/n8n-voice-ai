@@ -1,4 +1,4 @@
-## 🚀 **4. ENTWICKLUNGSPLAN**
+## 🚀 **ENTWICKLUNGSPLAN**
 
 ### **Phase 1: Foundation & Modernization (Wochen 1-4)**
 
