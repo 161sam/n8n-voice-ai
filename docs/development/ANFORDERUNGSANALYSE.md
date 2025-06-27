@@ -1,4 +1,4 @@
-## 🔍 **2. DETAILLIERTE ANFORDERUNGSANALYSE**
+## 🔍 **DETAILLIERTE ANFORDERUNGSANALYSE**
 
 ### **2.1 Funktionale Anforderungen**
 
