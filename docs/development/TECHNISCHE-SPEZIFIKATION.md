@@ -1,4 +1,4 @@
-## ⚙️ **3. TECHNISCHE SPEZIFIKATION**
+## ⚙️ **TECHNISCHE SPEZIFIKATION**
 
 ### **3.1 Architektur-Redesign**
 
